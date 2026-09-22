@@ -12,11 +12,25 @@ and what does it want?**
 ```bash
 git clone https://github.com/frankjrobinson/agent-office
 cd agent-office
-node server.js          # then open http://localhost:3200
-node server.js --demo   # a pretend team, if you want a look first
+
+node server.js --demo        # a pretend team — start here to see what it looks like
+node server.js --install-hooks   # let Claude Code report live (backs up your settings first)
+node server.js               # the real thing, at http://localhost:3200
 ```
 
 Node 20 or newer. No dependencies. Binds to 127.0.0.1 only.
+
+The office shows sessions from the last 8 hours (`--hours` changes that), so an empty room on first
+run usually means nothing has been running recently, not that something is broken. `--demo` always
+has something to look at, and `http://localhost:3200/api/debug` lists what it found.
+
+Installing the hooks is worth the one command: without them Agent Office reads transcripts, which is
+a few seconds behind and misses most permission prompts — and "this one is blocked waiting for you"
+is the thing you actually want to see. `--uninstall-hooks` removes them again, leaving any other
+hooks alone.
+
+Tested on macOS and Linux. Cowork session discovery is macOS-only. Windows should work for Claude
+Code and Codex but is untested — reports welcome.
 
 ## What's on screen
 
@@ -57,12 +71,13 @@ With hooks installed, Claude Code tells the office the moment a tool starts, a p
 appears, or a turn ends:
 
 ```bash
-npx agent-office --install-hooks    # backs up ~/.claude/settings.json first
-npx agent-office --uninstall-hooks  # removes only its own entries
+node server.js --install-hooks    # backs up ~/.claude/settings.json first
+node server.js --uninstall-hooks  # removes only its own entries
 ```
 
-Without them everything still works by reading transcripts; it's just a few seconds behind and
-permission prompts are less reliable. If you also run
+The installer only ever adds or removes its own entry, and keeps a copy of your previous settings at
+`~/.claude/settings.json.agent-office.backup`. Restart running sessions afterwards: Claude Code
+reads hooks when a session starts. If you also run
 [Pixel Agents](https://github.com/pablodelucca/pixel-agents), Agent Office registers alongside it
 and accepts its hook events too, so one hook install feeds both.
 
@@ -116,6 +131,9 @@ Only `id`, `status` and `updatedAt` are required. `status` is `working`, `needs_
 | `--beacons ~/dir` | `beacons/` | Where beacon files live. |
 | `--demo` | off | A pretend team, for a look around. |
 | `--install-hooks` / `--uninstall-hooks` | — | Manage the Claude Code hook. |
+
+Run it as `node server.js …` from a clone. (It's packaged for `npx agent-office`, but it isn't on
+npm yet.)
 
 `http://localhost:3200/api/debug` lists the folders and sessions it found — useful when a desk you
 expect isn't there.
