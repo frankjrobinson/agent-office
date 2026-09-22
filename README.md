@@ -150,6 +150,12 @@ git-ignored because those files carry conversation snippets too.
 Another agent is the contribution worth having — see `CONTRIBUTING.md`. No dependencies, and never
 interfere with the session being watched.
 
+## Support
+
+Agent Office is free and always will be. If it saves you from hunting through terminal tabs, you can
+[buy me a coffee](https://ko-fi.com/frankjrobinson) — entirely optional, and it changes nothing about
+the project either way.
+
 ## Licence
 
 MIT.
