@@ -1,0 +1,19 @@
+{
+  "name": "agent-office",
+  "version": "0.1.0",
+  "description": "An agile-team view of your AI coding sessions: a desk per session, a kanban whiteboard, and your issue backlog on the wall.",
+  "bin": { "agent-office": "server.js" },
+  "main": "server.js",
+  "files": ["server.js", "hook.js", "demo.js", "public/", "README.md", "LICENSE"],
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": ["claude-code", "codex", "agents", "dashboard", "observability", "kanban"],
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/frankjrobinson/agent-office.git" },
+  "bugs": { "url": "https://github.com/frankjrobinson/agent-office/issues" },
+  "homepage": "https://github.com/frankjrobinson/agent-office#readme"
+}

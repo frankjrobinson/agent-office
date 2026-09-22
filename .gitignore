@@ -1,0 +1,8 @@
+# Live status files written by cloud sessions — they contain conversation snippets
+beacons/
+*.log
+node_modules/
+.DS_Store
+
+# Local setup notes, not part of the project
+SETUP-GITHUB.md
