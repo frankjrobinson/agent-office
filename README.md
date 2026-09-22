@@ -7,7 +7,9 @@ session's own task list, and the wall on the left is your issue backlog.
 It answers the question a row of terminal tabs doesn't: **which of these is stuck waiting for me,
 and what does it want?**
 
-![The office in demo mode](docs/screenshot.png)
+![Agent Office in demo mode: four desks, two of them waiting on you](docs/demo.gif)
+
+<sub>Demo mode. Two desks need an answer, one is running tests, one is a Codex session.</sub>
 
 ```bash
 git clone https://github.com/frankjrobinson/agent-office
