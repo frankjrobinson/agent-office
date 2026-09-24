@@ -134,8 +134,8 @@ Only `id`, `status` and `updatedAt` are required. `status` is `working`, `needs_
 | `--demo` | off | A pretend team, for a look around. |
 | `--install-hooks` / `--uninstall-hooks` | — | Manage the Claude Code hook. |
 
-Run it as `node server.js …` from a clone. (It's packaged for `npx agent-office`, but it isn't on
-npm yet.)
+Run it as `node server.js …` from a clone. It isn't on npm, and the `agent-office` name there
+belongs to an unrelated package, so don't `npx agent-office`.
 
 `http://localhost:3200/api/debug` lists the folders and sessions it found — useful when a desk you
 expect isn't there.

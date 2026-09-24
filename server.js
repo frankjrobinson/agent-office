@@ -55,6 +55,11 @@ const HOOK_EVENTS = [
   'SubagentStop',
 ];
 const TOKEN = crypto.randomUUID();
+// The board's own token for actions (POSTs). Separate from TOKEN so the hook
+// token never reaches a browser. Served inside index.html, which another site
+// can't read, and sent back in a custom header, which another site can't send
+// without a CORS preflight this server never answers.
+const PAGE_TOKEN = crypto.randomUUID();
 const STARTED_AT = Date.now();
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Cowork (desktop) runs Claude in a local VM and keeps its transcripts under the
@@ -1004,6 +1009,91 @@ function scan() {
   if (changed) broadcast();
 }
 
+// ── Reading a conversation back out of a transcript ────────────────────────
+const CONVO_TAIL = 400 * 1024;
+
+function tailLines(file, bytes) {
+  let fd, st;
+  try {
+    st = fs.statSync(file);
+    fd = fs.openSync(file, 'r');
+  } catch {
+    return [];
+  }
+  try {
+    const start = Math.max(0, st.size - bytes);
+    const len = st.size - start;
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, start);
+    const lines = buf.toString('utf8').split('\n');
+    if (start > 0) lines.shift(); // first line is probably a fragment
+    return lines.filter(Boolean);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** The last `limit` turns of a session, for the conversation panel. */
+function conversation(s, limit = 60) {
+  if (!s || !s.transcriptPath) return [];
+  const out = [];
+  const push = (role, text, ts, extra) => {
+    if (!text || !String(text).trim()) return;
+    const last = out[out.length - 1];
+    // fold consecutive tool lines from the same turn into one entry
+    if (role === 'tool' && last && last.role === 'tool' && last.ts === ts) {
+      last.text += `\n${text}`;
+      return;
+    }
+    out.push({ role, text: clip(text, role === 'tool' ? 160 : 4000), ts: ts || 0, ...(extra || {}) });
+  };
+
+  for (const line of tailLines(s.transcriptPath, CONVO_TAIL)) {
+    let r;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const ts = Date.parse(r.timestamp) || 0;
+
+    if (s.format === 'codex') {
+      const p = r.payload || {};
+      if (r.type === 'event_msg') {
+        if (p.type === 'user_message') push('user', p.message || codexText(p.content), ts);
+        else if (p.type === 'agent_message') push('assistant', p.message || codexText(p.content), ts);
+      } else if (r.type === 'response_item') {
+        if (p.type === 'message') push(p.role === 'user' ? 'user' : 'assistant', codexText(p.content), ts);
+        else if (p.type === 'function_call' || p.type === 'local_shell_call') {
+          let a = {};
+          try {
+            a = typeof p.arguments === 'string' ? JSON.parse(p.arguments) : p.arguments || {};
+          } catch {
+            a = {};
+          }
+          push('tool', describeCodexTool(p.name || 'shell', a), ts);
+        }
+      }
+      continue;
+    }
+
+    if (r.isSidechain) continue;
+    const content = r.message && r.message.content;
+    if (r.type === 'user') {
+      if (Array.isArray(content) && content.some((c) => c && c.type === 'tool_result')) continue;
+      const text = textOf(content);
+      if (isHumanPrompt(text, r)) push('user', text, ts);
+    } else if (r.type === 'assistant' && Array.isArray(content)) {
+      for (const c of content) {
+        if (!c) continue;
+        if (c.type === 'text') push('assistant', c.text, ts);
+        else if (c.type === 'tool_use') push('tool', describeTool(c.name, c.input), ts, { tool: c.name });
+      }
+    }
+  }
+  return out.slice(-limit);
+}
+
 // ── Beacons from cloud sessions ────────────────────────────────────────────
 const BEACON_STATUSES = new Set(['working', 'needs_you', 'your_turn', 'ended']);
 const TASK_STATUSES = new Set(['pending', 'in_progress', 'completed']);
@@ -1308,6 +1398,13 @@ function broadcast() {
 // ── HTTP ───────────────────────────────────────────────────────────────────
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
+/** A POST from the board: our own origin (if the browser says) and the page token. */
+function pageActionAllowed(headers, port = PORT) {
+  const origin = headers.origin;
+  if (origin && origin !== `http://localhost:${port}` && origin !== `http://127.0.0.1:${port}`) return false;
+  return headers['x-agent-office-token'] === PAGE_TOKEN;
+}
+
 const server = http.createServer((req, res) => {
   // Refuse anything not addressed to localhost (DNS-rebinding guard)
   const host = (req.headers.host || '').split(':')[0];
@@ -1341,6 +1438,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Every other POST is an action from the board itself, never from another site
+  if (req.method === 'POST' && !pageActionAllowed(req.headers)) {
+    res.writeHead(403).end();
+    return;
+  }
+
   if (url.pathname === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(snapshot()));
@@ -1353,6 +1456,33 @@ const server = http.createServer((req, res) => {
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
+  }
+
+  const convo = url.pathname.match(/^\/api\/session\/(.+)\/messages$/);
+  if (convo) {
+    const s = sessions.get(decodeURIComponent(convo[1]));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    if (!s) return res.end(JSON.stringify({ messages: [], note: 'No such session.' }));
+    if (s.beacon)
+      return res.end(
+        JSON.stringify({
+          messages: [],
+          note: 'This session reports in with a beacon, so only its own summary is available here.',
+        }),
+      );
+    return res.end(JSON.stringify({ messages: conversation(s), note: null }));
+  }
+
+  // Bring the session's own window to the front, so you can answer it there.
+  const reveal = url.pathname.match(/^\/api\/session\/(.+)\/reveal$/);
+  if (reveal && req.method === 'POST') {
+    const s = sessions.get(decodeURIComponent(reveal[1]));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (!s || !s.cwd || process.platform !== 'darwin') {
+      return res.end(JSON.stringify({ ok: false, reason: 'Only supported for local sessions on macOS.' }));
+    }
+    execFile('open', ['-a', 'Terminal', s.cwd], () => {});
+    return res.end(JSON.stringify({ ok: true }));
   }
 
   if (url.pathname === '/api/debug') {
@@ -1389,7 +1519,7 @@ const server = http.createServer((req, res) => {
       return;
     }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
-    res.end(data);
+    res.end(full === path.join(PUBLIC_DIR, 'index.html') ? data.toString('utf8').replace('__PAGE_TOKEN__', PAGE_TOKEN) : data);
   });
 });
 
@@ -1496,6 +1626,8 @@ module.exports = {
   detectForge,
   handleHook,
   snapshot,
+  pageActionAllowed,
+  PAGE_TOKEN,
   setCwd,
   humanize,
 };
