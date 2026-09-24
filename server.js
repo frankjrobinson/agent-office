@@ -17,7 +17,7 @@
  *   3. `glab issue list` for each repo a session is working in.
  *
  * Usage
- *   node server.js [--port 3200] [--hours 8] [--repo ~/path/to/repo ...] [--demo]
+ *   node server.js [--port 3200] [--hours 8] [--repo ~/path/to/repo ...] [--demo] [--allow-replies]
  */
 'use strict';
 
@@ -34,6 +34,7 @@ const PORT = Number(args.port) || 3200;
 const HOST = '127.0.0.1';
 const LOOKBACK_MS = (Number(args.hours) || 8) * 3600_000;
 const DEMO = !!args.demo;
+const ALLOW_REPLIES = !!args['allow-replies'];
 const EXTRA_REPOS = [].concat(args.repo || []).map(expandHome);
 const HOME = os.homedir();
 const PROJECTS_DIR = path.join(HOME, '.claude', 'projects');
@@ -1094,6 +1095,84 @@ function conversation(s, limit = 60) {
   return out.slice(-limit);
 }
 
+// ── Replies (opt-in: --allow-replies) ──────────────────────────────────────
+// A reply resumes an idle Claude Code session in the background with your
+// message, through the supported `claude --bg --resume` command. A session that
+// is open somewhere (a terminal, the desktop app) is never touched: you answer
+// it there. A reply is not an approval — the resumed session still asks before
+// anything that needs permission, and the board shows that as "needs you".
+const CLAUDE_SESSIONS_DIR = path.join(HOME, '.claude', 'sessions');
+const REPLY_MAX_CHARS = 8000;
+const replying = new Set(); // session ids with a reply on its way
+
+/** Claude Code's own record of this session if it is running right now. */
+function liveRegistryEntry(sessionId, dir = CLAUDE_SESSIONS_DIR) {
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return null;
+  }
+  for (const f of files) {
+    try {
+      const e = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (e.sessionId !== sessionId || !e.pid) continue;
+      process.kill(e.pid, 0); // throws if that process is gone
+      return e;
+    } catch {
+      /* gone or malformed */
+    }
+  }
+  return null;
+}
+
+/** How a reply would reach this session: resume it, stop-then-resume, or refuse (and why). */
+function replyPlan(s, live) {
+  if (!s) return { action: 'refuse', reason: 'No such session.' };
+  if (s.beacon || s.format !== 'claude' || s.agent !== 'Claude Code') {
+    return { action: 'refuse', reason: 'Replies only reach Claude Code sessions on this Mac.' };
+  }
+  if (!s.cwd) return { action: 'refuse', reason: "This session's folder isn't known yet." };
+  if (!live) return { action: 'resume' };
+  if (live.kind === 'bg' || live.kind === 'background') {
+    // An idle background session can be stopped (its conversation is kept) and resumed with the reply
+    if (live.status === 'idle') return { action: 'stop-then-resume' };
+    return { action: 'refuse', reason: "It's in the middle of a turn. Reply once it has finished." };
+  }
+  const where = live.entrypoint === 'claude-desktop' ? 'in the Claude app' : 'in a terminal';
+  return { action: 'refuse', reason: `This session is open ${where}. Reply there.` };
+}
+
+function runClaude(argv, cwd) {
+  return new Promise((resolve) => {
+    execFile('claude', argv, { cwd, timeout: 60_000 }, (err, stdout, stderr) => {
+      const said = String(stderr || stdout || '').trim();
+      if (err && err.code === 'ENOENT') return resolve({ ok: false, said: "Couldn't find the `claude` command on this server's PATH." });
+      resolve({ ok: !err, said: said || (err ? err.message : '') });
+    });
+  });
+}
+
+async function sendReply(s, text) {
+  if (s && replying.has(s.id)) return { ok: false, reason: 'A reply to this session is already on its way.' };
+  const plan = replyPlan(s, s && liveRegistryEntry(s.id));
+  if (plan.action === 'refuse') return { ok: false, reason: plan.reason };
+  replying.add(s.id);
+  try {
+    if (plan.action === 'stop-then-resume') {
+      const stop = await runClaude(['stop', s.id.slice(0, 8)], s.cwd); // `stop` takes the short id
+      if (!stop.ok) return { ok: false, reason: clip(`Couldn't pause the background session: ${stop.said}`, 400) };
+      for (let i = 0; i < 20 && liveRegistryEntry(s.id); i++) await new Promise((r) => setTimeout(r, 250));
+      if (liveRegistryEntry(s.id)) return { ok: false, reason: "The background session didn't stop in time. Try again." };
+    }
+    // `--` so a message that starts with a dash is never read as an option
+    const r = await runClaude(['--bg', '--resume', s.id, '--', text], s.cwd);
+    return r.ok ? { ok: true } : { ok: false, reason: clip(r.said || 'claude exited with an error.', 400) };
+  } finally {
+    replying.delete(s.id);
+  }
+}
+
 // ── Beacons from cloud sessions ────────────────────────────────────────────
 const BEACON_STATUSES = new Set(['working', 'needs_you', 'your_turn', 'ended']);
 const TASK_STATUSES = new Set(['pending', 'in_progress', 'completed']);
@@ -1380,6 +1459,7 @@ function snapshot() {
     backlog: [...backlog.values()],
     hooksLive: [...sessions.values()].some((s) => s.lastHookAt > STARTED_AT),
     demo: DEMO,
+    replies: ALLOW_REPLIES,
   };
 }
 
@@ -1483,6 +1563,29 @@ const server = http.createServer((req, res) => {
     }
     execFile('open', ['-a', 'Terminal', s.cwd], () => {});
     return res.end(JSON.stringify({ ok: true }));
+  }
+
+  const reply = url.pathname.match(/^\/api\/session\/(.+)\/reply$/);
+  if (reply && req.method === 'POST') {
+    const answer = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify(obj));
+    if (!ALLOW_REPLIES) return answer(403, { ok: false, reason: 'Replies are off. Start the server with --allow-replies.' });
+    if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return answer(415, { ok: false, reason: 'Send JSON.' });
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+      if (body.length > 64 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      let text = '';
+      try {
+        text = String(JSON.parse(body).text || '').trim();
+      } catch {}
+      if (!text) return answer(400, { ok: false, reason: 'Nothing to send.' });
+      if (text.length > REPLY_MAX_CHARS) return answer(400, { ok: false, reason: `Keep it under ${REPLY_MAX_CHARS} characters.` });
+      if (DEMO) return answer(200, { ok: false, reason: 'These are pretend sessions, so the reply goes nowhere.' });
+      sendReply(sessions.get(decodeURIComponent(reply[1])), text).then((r) => answer(200, r));
+    });
+    return;
   }
 
   if (url.pathname === '/api/debug') {
@@ -1628,6 +1731,8 @@ module.exports = {
   snapshot,
   pageActionAllowed,
   PAGE_TOKEN,
+  replyPlan,
+  liveRegistryEntry,
   setCwd,
   humanize,
 };
@@ -1655,6 +1760,7 @@ if (require.main === module) {
       fs.mkdirSync(BEACON_DIR, { recursive: true });
     } catch {}
     console.log(`  Cloud sessions can report in by writing JSON into ${BEACON_DIR}\n`);
+    if (ALLOW_REPLIES) console.log('  Replies are ON: the board can resume idle Claude Code sessions with a message you type.\n');
     const settings = readSettings();
     const installed = JSON.stringify(settings.hooks || {}).includes('agent-office');
     if (!installed) {

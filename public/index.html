@@ -237,7 +237,7 @@ a { color: inherit; }
 .drawer-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-start; }
 .drawer-head h2 { margin: 0; font-size: 17px; flex: 1; }
 .drawer-head h2::first-letter { text-transform: uppercase; }
-.drawer-body { padding: 6px 18px 40px; overflow-y: auto; }
+.drawer-body { flex: 1; min-height: 0; padding: 6px 18px 40px; overflow-y: auto; }
 .sec { margin-top: 16px; }
 .sec h5 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
 .quote { background: var(--panel-2); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
@@ -273,6 +273,15 @@ a { color: inherit; }
 .actions button.primary { background: color-mix(in srgb, var(--needs) 22%, var(--panel)); border-color: color-mix(in srgb, var(--needs) 55%, transparent); }
 .actions button:hover { border-color: var(--turn); }
 .hint { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+.hint.err { color: var(--needs); }
+.drawer-foot { border-top: 1px solid var(--line); padding: 10px 18px 14px; background: var(--panel); }
+.drawer-foot:empty { display: none; }
+.drawer-foot textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 56px; max-height: 30vh; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13px/1.4 var(--sans); }
+.drawer-foot textarea:focus { outline: none; border-color: var(--turn); }
+.foot-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 6px; }
+.foot-row .hint { margin-top: 0; }
+.foot-row button { flex: none; background: color-mix(in srgb, var(--turn) 22%, var(--panel)); border: 1px solid color-mix(in srgb, var(--turn) 55%, transparent); color: var(--text); border-radius: 7px; padding: 6px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.foot-row button:disabled { opacity: .5; cursor: default; }
 .detail { font: 11.5px ui-monospace, monospace; background: #111827; color: #e5e7eb; padding: 7px 9px; border-radius: 5px; margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
 
 @media (max-width: 760px) {
@@ -294,7 +303,7 @@ a { color: inherit; }
   <aside class="backlog" id="backlog"></aside>
   <main class="floor" id="floor"></main>
 </div>
-<aside class="drawer" id="drawer"><div class="drawer-head" id="dhead"></div><div class="drawer-body" id="dbody"></div></aside>
+<aside class="drawer" id="drawer"><div class="drawer-head" id="dhead"></div><div class="drawer-body" id="dbody"></div><div class="drawer-foot" id="dfoot"></div></aside>
 <div class="tip" id="tip"></div>
 
 <script>
@@ -306,7 +315,12 @@ const podCache = new Map();
 // ── helpers ─────────────────────────────────
 // Actions carry the page's own token; the server refuses POSTs without it
 const PAGE_TOKEN = document.querySelector('meta[name="agent-office-token"]').content;
-const action = (url) => fetch(url, { method: 'POST', headers: { 'X-Agent-Office-Token': PAGE_TOKEN } });
+const action = (url, body) =>
+  fetch(url, {
+    method: 'POST',
+    headers: { 'X-Agent-Office-Token': PAGE_TOKEN, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function ago(ts) {
   if (!ts) return '';
@@ -592,7 +606,7 @@ function renderBacklog() {
 function renderDrawer() {
   const s = state.sessions.find((x) => x.id === openId);
   const drawer = document.getElementById('drawer');
-  if (!s) { drawer.classList.remove('open'); openId = null; return; }
+  if (!s) { drawer.classList.remove('open'); openId = null; renderFoot(null); return; }
   const issues = issueIndex();
   const parked = isParked(s);
   const head = `<h2>${esc(s.title)}</h2><span class="pill"><span class="dot ${parked ? 'ended' : s.status}"></span>${parked ? 'Parked' : STATUS_LABEL[s.status]}</span><button class="iconbtn" data-close>✕</button>`;
@@ -639,7 +653,51 @@ function renderDrawer() {
   if (dh.dataset.html !== head) { dh.innerHTML = head; dh.dataset.html = head; }
   if (db.dataset.html !== body) { db.innerHTML = body; db.dataset.html = body; }
   drawer.classList.add('open');
+  renderFoot(s);
   loadConversation(s.id);
+}
+
+// ── reply composer ─────────────────────────────────────────────────────────
+// Sits outside the drawer body, which is rebuilt on every update and would wipe a half-typed reply
+let footFor = null;
+const canReply = (s) => state.replies && !s.beacon && s.agent === 'Claude Code' && !!s.cwd;
+function renderFoot(s) {
+  const foot = document.getElementById('dfoot');
+  if (!s || !canReply(s)) { foot.innerHTML = ''; footFor = null; return; }
+  if (footFor !== s.id) {
+    footFor = s.id;
+    foot.innerHTML = `<textarea id="reply" rows="2" placeholder="Reply to this session…"></textarea><div class="foot-row"><span class="hint" id="reply-note"></span><button id="reply-send">Send</button></div>`;
+  }
+  const note = document.getElementById('reply-note');
+  if (note.dataset.sticky) return; // keep the last send's outcome until you type again
+  note.classList.remove('err');
+  note.textContent =
+    s.status === 'working' ? "It's working. Send once it has finished its turn." :
+    s.status === 'needs_you' ? 'Approvals are given where it runs, not here.' :
+    'Picks the session back up in the background with your message. ⌘↩ sends.';
+}
+async function sendReply() {
+  const id = footFor;
+  const box = document.getElementById('reply');
+  const btn = document.getElementById('reply-send');
+  const note = document.getElementById('reply-note');
+  const text = box.value.trim();
+  if (!id || !text || btn.disabled) return;
+  btn.disabled = true;
+  note.dataset.sticky = '1';
+  note.classList.remove('err');
+  note.textContent = 'Sending…';
+  let r;
+  try {
+    r = await action(`/api/session/${encodeURIComponent(id)}/reply`, { text }).then((x) => x.json());
+  } catch {
+    r = { ok: false, reason: 'Could not reach the server.' };
+  }
+  if (footFor !== id) return; // drawer moved on
+  btn.disabled = false;
+  note.textContent = r.ok ? 'Sent. It picks up in a moment.' : r.reason || 'Not sent.';
+  note.classList.toggle('err', !r.ok);
+  if (r.ok) box.value = '';
 }
 
 // ── conversation panel ─────────────────────────────────────────────────────
@@ -696,10 +754,15 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.closest('[data-refresh-convo]')) { loadConversation(openId, true); return; }
+  if (t.id === 'reply-send') { sendReply(); return; }
   const pod = t.closest('.pod, .dorm');
   if (pod) { openId = pod.dataset.id; renderDrawer(); return; }
   if (!t.closest('.drawer')) { openId = null; document.getElementById('drawer').classList.remove('open'); }
 });
+document.addEventListener('keydown', (e) => {
+  if (e.target.id === 'reply' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendReply(); }
+});
+document.addEventListener('input', (e) => { if (e.target.id === 'reply') delete document.getElementById('reply-note').dataset.sticky; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { openId = null; document.getElementById('drawer').classList.remove('open'); } });
 
 const tip = document.getElementById('tip');

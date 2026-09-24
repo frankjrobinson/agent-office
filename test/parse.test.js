@@ -127,3 +127,34 @@ test('board actions need our origin and the page token', () => {
   assert.equal(pageActionAllowed({ origin: 'http://localhost:3200' }, 3200), false);
   assert.equal(pageActionAllowed({ 'x-agent-office-token': 'guess', origin: 'http://localhost:3200' }, 3200), false);
 });
+
+test('a reply resumes idle sessions and leaves open ones alone', () => {
+  const { replyPlan } = require('../server.js');
+  const s = { ...newSession('r1'), cwd: '/home/dev/acme' };
+  assert.equal(replyPlan(s, null).action, 'resume');
+  assert.equal(replyPlan(s, { kind: 'bg', status: 'idle' }).action, 'stop-then-resume');
+  assert.equal(replyPlan(s, { kind: 'bg', status: 'busy' }).action, 'refuse');
+  assert.match(replyPlan(s, { kind: 'interactive', entrypoint: 'claude-desktop' }).reason, /Claude app/);
+  assert.match(replyPlan(s, { kind: 'interactive', entrypoint: 'cli' }).reason, /terminal/);
+  assert.equal(replyPlan({ ...s, agent: 'Codex', format: 'codex' }, null).action, 'refuse');
+  assert.equal(replyPlan({ ...s, agent: 'Cowork' }, null).action, 'refuse');
+  assert.equal(replyPlan({ ...s, beacon: true }, null).action, 'refuse');
+  assert.equal(replyPlan({ ...s, cwd: null }, null).action, 'refuse');
+  assert.equal(replyPlan(undefined, null).action, 'refuse');
+});
+
+test('only a live process counts as a running session', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { liveRegistryEntry } = require('../server.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-sessions-'));
+  fs.writeFileSync(path.join(dir, '1.json'), JSON.stringify({ pid: process.pid, sessionId: 'live', kind: 'interactive' }));
+  fs.writeFileSync(path.join(dir, '2.json'), JSON.stringify({ pid: 2 ** 22 + 7, sessionId: 'dead', kind: 'bg' }));
+  fs.writeFileSync(path.join(dir, '3.json'), '{ not json');
+  assert.equal(liveRegistryEntry('live', dir).kind, 'interactive');
+  assert.equal(liveRegistryEntry('dead', dir), null);
+  assert.equal(liveRegistryEntry('missing', dir), null);
+  assert.equal(liveRegistryEntry('live', path.join(dir, 'nope')), null);
+  fs.rmSync(dir, { recursive: true });
+});
