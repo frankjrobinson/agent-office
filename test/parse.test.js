@@ -115,3 +115,15 @@ test('tool descriptions read like plain English', () => {
 test('worktree names become readable titles', () => {
   assert.equal(humanize('address-pin-google-maps-45677c'), 'address pin google maps');
 });
+
+test('board actions need our origin and the page token', () => {
+  const { pageActionAllowed, PAGE_TOKEN } = require('../server.js');
+  const token = { 'x-agent-office-token': PAGE_TOKEN };
+  assert.equal(pageActionAllowed({ ...token, origin: 'http://localhost:3200' }, 3200), true);
+  assert.equal(pageActionAllowed({ ...token, origin: 'http://127.0.0.1:3200' }, 3200), true);
+  assert.equal(pageActionAllowed(token, 3200), true); // same-origin requests may omit Origin
+  assert.equal(pageActionAllowed({ ...token, origin: 'https://evil.example' }, 3200), false);
+  assert.equal(pageActionAllowed({ ...token, origin: 'http://localhost:9999' }, 3200), false);
+  assert.equal(pageActionAllowed({ origin: 'http://localhost:3200' }, 3200), false);
+  assert.equal(pageActionAllowed({ 'x-agent-office-token': 'guess', origin: 'http://localhost:3200' }, 3200), false);
+});

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="agent-office-token" content="__PAGE_TOKEN__">
 <title>Agent Office</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -257,6 +258,21 @@ a { color: inherit; }
 .copy { display: flex; gap: 6px; align-items: center; background: var(--panel-2); border-radius: 6px; padding: 6px 8px; font: 12px ui-monospace, monospace; }
 .copy code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy button { border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 2px 8px; cursor: pointer; font-family: var(--sans); }
+.convo { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 10px; }
+.convo h5 { display: flex; justify-content: space-between; align-items: center; }
+.convo h5 button { font: 11px var(--sans); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.msgs { max-height: 46vh; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 8px; }
+.msg { font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; border-radius: 8px; padding: 8px 10px; }
+.msg.user { background: color-mix(in srgb, var(--turn) 16%, var(--panel-2)); margin-left: 24px; }
+.msg.assistant { background: var(--panel-2); }
+.msg.tool { background: transparent; color: var(--faint); font: 11.5px ui-monospace, monospace; padding: 0 2px; white-space: pre-wrap; }
+.msg .who { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 3px; }
+.msg-empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 6px 2px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.actions button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.actions button.primary { background: color-mix(in srgb, var(--needs) 22%, var(--panel)); border-color: color-mix(in srgb, var(--needs) 55%, transparent); }
+.actions button:hover { border-color: var(--turn); }
+.hint { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
 .detail { font: 11.5px ui-monospace, monospace; background: #111827; color: #e5e7eb; padding: 7px 9px; border-radius: 5px; margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
 
 @media (max-width: 760px) {
@@ -288,6 +304,9 @@ let openId = null;
 const podCache = new Map();
 
 // ── helpers ─────────────────────────────────
+// Actions carry the page's own token; the server refuses POSTs without it
+const PAGE_TOKEN = document.querySelector('meta[name="agent-office-token"]').content;
+const action = (url) => fetch(url, { method: 'POST', headers: { 'X-Agent-Office-Token': PAGE_TOKEN } });
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function ago(ts) {
   if (!ts) return '';
@@ -362,6 +381,15 @@ function agentTag(s) {
 }
 function where(s) {
   return s.where || 'local';
+}
+// How you'd pick this session back up, in its own tool's words
+function resumeCommand(s) {
+  if (s.beacon) return s.link || null;
+  if (s.agent === 'Codex') {
+    const uuid = (s.id.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [])[0];
+    return uuid ? `codex resume ${uuid}` : 'codex resume --last';
+  }
+  return `claude --resume ${s.id}`;
 }
 
 function renderDormant(s) {
@@ -570,7 +598,9 @@ function renderDrawer() {
   const head = `<h2>${esc(s.title)}</h2><span class="pill"><span class="dot ${parked ? 'ended' : s.status}"></span>${parked ? 'Parked' : STATUS_LABEL[s.status]}</span><button class="iconbtn" data-close>✕</button>`;
   let body = '';
   if (s.status === 'needs_you' && s.waiting) {
-    body += `<div class="sec"><h5>${s.waiting.kind === 'question' ? 'Question for you' : s.waiting.kind === 'plan' ? 'Plan awaiting approval' : 'Waiting for permission'}</h5><div class="quote" style="border-left:3px solid var(--needs)">${esc(s.waiting.text)}${s.waiting.detail ? `<div class="detail">${esc(s.waiting.detail)}</div>` : ''}</div></div>`;
+    body += `<div class="sec"><h5>${s.waiting.kind === 'question' ? 'Question for you' : s.waiting.kind === 'plan' ? 'Plan awaiting approval' : 'Waiting for permission'}</h5><div class="quote" style="border-left:3px solid var(--needs)">${esc(s.waiting.text)}${s.waiting.detail ? `<div class="detail">${esc(s.waiting.detail)}</div>` : ''}</div>
+      <div class="actions">${!s.beacon ? `<button class="primary" data-reveal="${esc(s.id)}">Open the session</button>` : ''}${s.link ? `<a href="${esc(s.link)}" target="_blank" rel="noopener"><button class="primary">Open the session</button></a>` : ''}${resumeCommand(s) ? `<button data-copy="${esc(resumeCommand(s))}">Copy resume command</button>` : ''}</div>
+      <div class="hint">Answer it in the session itself — approvals can only be given where the session is running.</div></div>`;
   }
   if (s.status === 'working' && s.activity) body += `<div class="sec"><h5>Doing right now</h5><div class="quote">${esc(s.activity)}</div></div>`;
   if (s.lastAssistant) body += `<div class="sec"><h5>Latest from Claude</h5><div class="quote">${esc(s.lastAssistant)}</div></div>`;
@@ -590,8 +620,8 @@ function renderDrawer() {
   if ((s.tasks || []).length) {
     body += `<div class="sec"><h5>Board</h5>${s.tasks.map((t) => `<div class="row"><span class="st ${t.status}">${esc(t.status.replace('_', ' '))}</span><div class="grow">${esc(t.subject)}${t.owner ? `<small>${esc(t.owner)}</small>` : ''}</div></div>`).join('')}</div>`;
   }
-  if (!s.beacon) body += `<div class="sec"><h5>Pick it up</h5><div class="copy"><code>claude --resume ${esc(s.id)}</code><button data-copy="claude --resume ${esc(s.id)}">Copy</button></div></div>`;
-  else if (s.link) body += `<div class="sec"><h5>Pick it up</h5><div class="copy"><code>${esc(s.link)}</code><button data-copy="${esc(s.link)}">Copy</button></div></div>`;
+  const resume = resumeCommand(s);
+  if (resume) body += `<div class="sec"><h5>Pick it up</h5><div class="copy"><code>${esc(resume)}</code><button data-copy="${esc(resume)}">Copy</button></div></div>`;
   body += `<div class="sec"><h5>Details</h5><div class="kv">
     <div>Agent</div><div>${esc(s.agent || '')}</div>
     <div>Where</div><div>${esc(s.where || s.project || '')}</div>
@@ -602,11 +632,50 @@ function renderDrawer() {
     <div>Updates</div><div>${s.beacon ? `Beacon · reported ${esc(ago(s.lastActivity))}` : s.hooked ? 'Live (hooks)' : 'From transcript'}</div>
     ${s.link ? `<div>Open</div><div><a href="${esc(s.link)}" target="_blank" rel="noopener">Open this session</a></div>` : ''}
     <div>Session</div><div><code>${esc(s.id)}</code></div></div></div>`;
+  body += `<div class="convo" id="convo"><h5><span>Conversation</span><button data-refresh-convo>Refresh</button></h5><div class="msgs" id="msgs"><div class="msg-empty">Loading…</div></div></div>`;
+
   const dh = document.getElementById('dhead');
   const db = document.getElementById('dbody');
   if (dh.dataset.html !== head) { dh.innerHTML = head; dh.dataset.html = head; }
   if (db.dataset.html !== body) { db.innerHTML = body; db.dataset.html = body; }
   drawer.classList.add('open');
+  loadConversation(s.id);
+}
+
+// ── conversation panel ─────────────────────────────────────────────────────
+let convoFor = null;
+let convoSig = '';
+async function loadConversation(id, force) {
+  const box = document.getElementById('msgs');
+  if (!box) return;
+  if (convoFor !== id) {
+    convoSig = '';
+    box.innerHTML = '<div class="msg-empty">Loading…</div>';
+  }
+  convoFor = id;
+  let data;
+  try {
+    data = await fetch(`/api/session/${encodeURIComponent(id)}/messages`).then((r) => r.json());
+  } catch {
+    box.innerHTML = '<div class="msg-empty">Could not read this session\'s transcript.</div>';
+    return;
+  }
+  if (convoFor !== id) return; // drawer moved on while we were fetching
+  const sig = JSON.stringify(data.messages.map((m) => [m.role, m.ts, m.text.length]));
+  if (sig === convoSig && !force) return;
+  convoSig = sig;
+  if (!data.messages.length) {
+    box.innerHTML = `<div class="msg-empty">${esc(data.note || 'Nothing to show yet.')}</div>`;
+    return;
+  }
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.innerHTML = data.messages
+    .map((m) => {
+      if (m.role === 'tool') return `<div class="msg tool">${esc(m.text)}</div>`;
+      return `<div class="msg ${m.role}"><span class="who">${m.role === 'user' ? 'You' : 'Claude'} · ${esc(ago(m.ts))}</span>${esc(m.text)}</div>`;
+    })
+    .join('');
+  if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
 // ── interactions ─────────────────────────────────
@@ -618,7 +687,15 @@ document.addEventListener('click', (e) => {
   if (t.closest('[data-close]')) { openId = null; document.getElementById('drawer').classList.remove('open'); return; }
   const opener = t.closest('[data-open]');
   if (opener) { e.preventDefault(); openId = opener.dataset.open; renderDrawer(); return; }
-  if (t.id === 'refresh') { fetch('/api/refresh-backlog', { method: 'POST' }); t.textContent = '↻ …'; return; }
+  if (t.id === 'refresh') { action('/api/refresh-backlog'); t.textContent = '↻ …'; return; }
+  const rev = t.closest('[data-reveal]');
+  if (rev) {
+    action(`/api/session/${encodeURIComponent(rev.dataset.reveal)}/reveal`)
+      .then((r) => r.json())
+      .then((r) => { rev.textContent = r.ok ? 'Opened' : 'Open it yourself — see the folder below'; });
+    return;
+  }
+  if (t.closest('[data-refresh-convo]')) { loadConversation(openId, true); return; }
   const pod = t.closest('.pod, .dorm');
   if (pod) { openId = pod.dataset.id; renderDrawer(); return; }
   if (!t.closest('.drawer')) { openId = null; document.getElementById('drawer').classList.remove('open'); }
@@ -656,6 +733,7 @@ function connect() {
 }
 connect();
 setInterval(render, 20_000); // refresh "x min ago"
+setInterval(() => { if (openId) loadConversation(openId); }, 4000);
 </script>
 </body>
 </html>
