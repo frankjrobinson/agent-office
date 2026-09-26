@@ -93,6 +93,21 @@ An issue moves to "On a desk" when a session is working on it — matched from t
 name (`212-fix-progress`), or a mention of `#212`, `ABC-212` or an issue URL in the session's first
 message, latest message or task cards.
 
+## Replying from the board
+
+Off unless you start the server with `--allow-replies`. Then the drawer has a reply box for Claude
+Code sessions on this Mac. Sending picks the session back up in the background with your message
+(`claude --bg --resume`), so it carries on without you opening a terminal.
+
+- **Only idle sessions.** A session open in a terminal or the Claude app is left alone: you reply
+  there. A background session that has finished its turn is stopped and resumed with your message;
+  its conversation is kept.
+- **Not an approval.** The resumed session still asks before anything that needs permission, and
+  the board shows it as "needs you".
+- **The `claude` command must be signed in** and on the server's `PATH`.
+- **Only the board can send.** Other websites open in your browser can't: each send needs a token
+  that only the board's own page has.
+
 ## Beacons: sessions that aren't on this machine
 
 An agent with no local transcript reports in instead: it writes `beacons/<id>.json` and refreshes it
@@ -132,6 +147,7 @@ Only `id`, `status` and `updatedAt` are required. `status` is `working`, `needs_
 | `--codex ~/dir` | `~/.codex/sessions` | Where Codex keeps its rollouts. |
 | `--beacons ~/dir` | `beacons/` | Where beacon files live. |
 | `--demo` | off | A pretend team, for a look around. |
+| `--allow-replies` | off | Let the board send a message to an idle Claude Code session. See below. |
 | `--install-hooks` / `--uninstall-hooks` | — | Manage the Claude Code hook. |
 
 Run it as `node server.js …` from a clone. It isn't on npm, and the `agent-office` name there
